@@ -19,8 +19,8 @@ instance Arbitrary Ver where
 
 instance Arbitrary Request where
     arbitrary = oneof
-        [ Request <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
-        , Notif <$> arbitrary <*> arbitrary <*> arbitrary
+        [ Request <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        , Notif <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
         ]
 
 instance Arbitrary Response where

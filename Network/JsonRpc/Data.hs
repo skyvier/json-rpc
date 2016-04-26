@@ -62,31 +62,44 @@ import GHC.Generics (Generic)
 data Request = Request { getReqVer      :: !Ver
                        , getReqMethod   :: !Method
                        , getReqParams   :: !Value
+                       , getReqAuth     :: !(Maybe Value) -- ^ Non-standard
                        , getReqId       :: !Id
                        }
              | Notif   { getReqVer      :: !Ver
                        , getReqMethod   :: !Method
                        , getReqParams   :: !Value
+                       , getReqAuth     :: !(Maybe Value) -- ^ Non-standard
                        }
              deriving (Eq, Show, Generic)
 
 instance NFData Request where
-    rnf (Request v m p i) = rnf v `seq` rnf m `seq` rnf p `seq` rnf i
-    rnf (Notif v m p) = rnf v `seq` rnf m `seq` rnf p
+    rnf (Request v m p a i) = rnf v `seq` rnf m `seq` rnf p `seq` rnf a `seq` rnf i
+    rnf (Notif v m p a) = rnf v `seq` rnf m `seq` rnf p `seq` rnf a
 
 instance ToJSON Request where
-    toJSON (Request V2 m p i) = object $ case p of
-        Null -> [jr2, "method" .= m, "id" .= i]
-        _    -> [jr2, "method" .= m, "id" .= i, "params" .= p]
-    toJSON (Request V1 m p i) = object $ case p of
-        Null -> ["method" .= m, "params" .= emptyArray, "id" .= i]
-        _    -> ["method" .= m, "params" .= p, "id" .= i]
-    toJSON (Notif V2 m p) = object $ case p of
-        Null -> [jr2, "method" .= m]
-        _    -> [jr2, "method" .= m, "params" .= p]
-    toJSON (Notif V1 m p) = object $ case p of
-        Null -> ["method" .= m, "params" .= emptyArray, "id" .= Null]
-        _    -> ["method" .= m, "params" .= p, "id" .= Null]
+    toJSON (Request V2 m p ma i) = object $ case (p, ma) of
+        (Null, Nothing) -> [jr2, "method" .= m, "id" .= i]
+        (_, Nothing)    -> [jr2, "method" .= m, "id" .= i, "params" .= p]
+        (Null, Just a)  -> [jr2, "method" .= m, "id" .= i, "auth" .= a]
+        (_, Just a)     -> [jr2, "method" .= m, "id" .= i, "auth" .= a, "params" .= p]
+
+    toJSON (Request V1 m p ma i) = object $ case (p, ma) of
+        (Null, Nothing) -> ["method" .= m, "params" .= emptyArray, "id" .= i]
+        (_, Nothing)    -> ["method" .= m, "id" .= i, "params" .= p]
+        (Null, Just a)  -> ["method" .= m, "params" .= emptyArray, "id" .= i, "auth" .= a]
+        (_, Just a)     -> ["method" .= m, "id" .= i, "auth" .= a, "params" .= p]
+
+    toJSON (Notif V2 m p ma) = object $ case (p, ma) of
+        (Null, Nothing) -> [jr2, "method" .= m]
+        (_, Nothing)    -> [jr2, "method" .= m, "params" .= p]
+        (Null, Just a)  -> [jr2, "method" .= m, "auth" .= a]
+        (_, Just a)     -> [jr2, "method" .= m, "auth" .= a, "params" .= p]
+
+    toJSON (Notif V1 m p ma) = object $ case (p, ma) of
+        (Null, Nothing) -> ["method" .= m, "params" .= emptyArray]
+        (_, Nothing)    -> ["method" .= m, "params" .= p]
+        (Null, Just a)  -> ["method" .= m, "params" .= emptyArray, "auth" .= a]
+        (_, Just a)     -> ["method" .= m, "auth" .= a, "params" .= p]
 
 class FromRequest q where
     -- | Parser for params Value in JSON-RPC request.
@@ -113,17 +126,18 @@ instance FromRequest () where
 
 instance FromJSON Request where
     parseJSON = withObject "request" $ \o -> do
-        (v, n, m, p) <- parseVerIdMethParams o
-        case n of Nothing -> return $ Notif   v m p
-                  Just i  -> return $ Request v m p i
+        (v, n, m, p, a) <- parseVerIdMethParamsAuth o
+        case n of Nothing -> return $ Notif   v m p a
+                  Just i  -> return $ Request v m p a i
 
-parseVerIdMethParams :: Object -> Parser (Ver, Maybe Id, Method, Value)
-parseVerIdMethParams o = do
+parseVerIdMethParamsAuth :: Object -> Parser (Ver, Maybe Id, Method, Value, Maybe Value)
+parseVerIdMethParamsAuth o = do
     v <- parseVer o
     i <- o .:? "id"
     m <- o .: "method"
     p <- o .:? "params" .!= Null
-    return (v, i, m, p)
+    a <- o .:? "auth"
+    return (v, i, m, p, a)
 
 class ToRequest q where
     -- | Method associated with request data to build a request object.
@@ -131,6 +145,10 @@ class ToRequest q where
 
     -- | Is this request to be sent as a notification (no id, no response)?
     requestIsNotif :: q -> Bool
+
+    -- | Is there a non-standard auth-field in this request? (default implementation: Nothing)
+    requestAuth :: q -> Maybe Value
+    requestAuth _ = Nothing
 
 instance ToRequest Value where
     requestMethod = const "json"
@@ -146,8 +164,8 @@ buildRequest :: (ToJSON q, ToRequest q)
              -> Id
              -> Request
 buildRequest ver q = if requestIsNotif q
-                         then const $ Notif ver (requestMethod q) (toJSON q)
-                         else Request ver (requestMethod q) (toJSON q)
+                         then const $ Notif ver (requestMethod q) (toJSON q) (requestAuth q)
+                         else Request ver (requestMethod q) (toJSON q) (requestAuth q)
 
 --
 -- Responses
@@ -228,7 +246,7 @@ buildResponse :: (Monad m, FromRequest q, ToJSON r)
               => Respond q m r
               -> Request
               -> m (Maybe Response)
-buildResponse f req@(Request v _ _ i) =
+buildResponse f req@(Request v _ _ _ i) =
     case fromRequest req of
         Left e -> return . Just $ ResponseError v e i
         Right q -> do
