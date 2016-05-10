@@ -77,7 +77,7 @@ data Req = Req { getReq :: Request } deriving (Show, Eq)
 
 instance Arbitrary Req where
     arbitrary = do
-        rq <- Request <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
+        rq <- Request <$> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary <*> arbitrary
         return $ Req rq
 
 data ReqNot = ReqNotReq { getReqNotParams :: Value }
@@ -140,8 +140,8 @@ checkFieldsReqNotif ver m v i o = do
     return True
 
 checkFieldsReq :: Request -> Object -> Parser Bool
-checkFieldsReq (Request ver m v i) = checkFieldsReqNotif ver m v (Just i)
-checkFieldsReq (Notif   ver m v)   = checkFieldsReqNotif ver m v Nothing
+checkFieldsReq (Request ver m v _ i) = checkFieldsReqNotif ver m v (Just i)
+checkFieldsReq (Notif   ver m v _)   = checkFieldsReqNotif ver m v Nothing
 
 checkFieldsRes :: Response -> Object -> Parser Bool
 checkFieldsRes (Response ver v i) o = do
@@ -309,7 +309,7 @@ testIncomingResponse (reqss', ver, ignore) = nodup ==> monadicIO $ do
                    f (SingleRequest rt) = [rt]
                in concatMap f reqs
     nodup = length (nubBy ((==) `on` getReqId) flatreqs) == length flatreqs
-    respond (Request v _ p i) = Response v p i
+    respond (Request v _ p _ i) = Response v p i
     respond _ = undefined
     responses = map respond flatreqs
     msgs = map MsgResponse responses
@@ -361,8 +361,8 @@ testSendBatchRequest (reqnotres, ver, ignore) = nonull ==> monadicIO $ do
   where
     nonull = not $ null reqnotres
     resmap = M.fromList $ map (first toJSON) reqnotres
-    respond (Request v _ _ i) (Left  y) = Just $ ResponseError v y i
-    respond (Request v _ _ i) (Right y) = Just $ Response      v y i
+    respond (Request v _ _ _ i) (Left  y) = Just $ ResponseError v y i
+    respond (Request v _ _ _ i) (Right y) = Just $ Response      v y i
     respond _ _ = undefined
     fulfill req sent = F.forM_ (getReqId req `M.lookup` sent) $ \p ->
         putTMVar p $ respond req $ fromJust $ getReqParams req `M.lookup` resmap
