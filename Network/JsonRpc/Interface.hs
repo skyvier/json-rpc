@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ConstraintKinds #-}
 -- | Interface for JSON-RPC.
 module Network.JsonRpc.Interface
 ( -- * Establish JSON-RPC context
@@ -74,6 +75,8 @@ data Session = Session { inCh     :: TBMChan (Either Response Value)
 -- as context is maintaned.
 type JsonRpcT = ReaderT Session
 
+type JsonRpcM m = (MonadReader Session m, Functor m, MonadLoggerIO m)
+
 initSession :: Ver -> Bool -> STM Session
 initSession v ignore =
     Session <$> newTBMChan 128
@@ -113,7 +116,7 @@ decodeConduit ver = evalStateT loop Nothing where
 
 -- | Process incoming messages. Do not use this directly unless you know
 -- what you are doing. This is an internal function.
-processIncoming :: (Functor m, MonadLoggerIO m) => JsonRpcT m ()
+processIncoming :: JsonRpcM m => m ()
 processIncoming = ask >>= \qs -> join . liftIO . atomically $ do
     vEM <- readTBMChan $ inCh qs
     case vEM of
@@ -212,14 +215,14 @@ processIncoming = ask >>= \qs -> join . liftIO . atomically $ do
 -- | Returns Nothing if did not receive response, could not parse it, or
 -- request is a notification. Just Left contains the error object returned
 -- by server if any. Just Right means response was received just right.
-sendRequest :: (MonadLoggerIO m , ToJSON q, ToRequest q, FromResponse r)
-            => q -> JsonRpcT m (Maybe (Either ErrorObj r))
+sendRequest :: (JsonRpcM m , ToJSON q, ToRequest q, FromResponse r)
+            => q -> m (Maybe (Either ErrorObj r))
 sendRequest q = head `liftM` sendBatchRequest [q]
 
 -- | Send multiple requests in a batch. If only a single request, do not
 -- put it in a batch.
-sendBatchRequest :: (MonadLoggerIO m, ToJSON q, ToRequest q, FromResponse r)
-                 => [q] -> JsonRpcT m [Maybe (Either ErrorObj r)]
+sendBatchRequest :: (JsonRpcM m, ToJSON q, ToRequest q, FromResponse r)
+                 => [q] -> m [Maybe (Either ErrorObj r)]
 sendBatchRequest qs = do
     v <- reader rpcVer
     l <- reader lastId
@@ -264,7 +267,7 @@ sendBatchRequest qs = do
 -- | Receive requests from remote endpoint. Returns Nothing if incoming
 -- channel is closed or has never been opened. Will reject incoming request
 -- if sent in a batch.
-receiveRequest :: MonadLoggerIO m => JsonRpcT m (Maybe Request)
+receiveRequest :: JsonRpcM m => m (Maybe Request)
 receiveRequest = do
     bt <- receiveBatchRequest
     case bt of
@@ -278,7 +281,7 @@ receiveRequest = do
             return Nothing
 
 -- | Receive batch of requests. Will also accept single requests.
-receiveBatchRequest :: MonadLoggerIO m => JsonRpcT m (Maybe BatchRequest)
+receiveBatchRequest :: JsonRpcM m => m (Maybe BatchRequest)
 receiveBatchRequest = do
     chM <- reader reqCh
     case chM of
@@ -290,13 +293,13 @@ receiveBatchRequest = do
             return Nothing
 
 -- | Send response message. Do not use to respond to a batch of requests.
-sendResponse :: MonadLoggerIO m => Response -> JsonRpcT m ()
+sendResponse :: JsonRpcM m => Response -> m ()
 sendResponse r = do
     o <- reader outCh
     liftIO . atomically . writeTBMChan o $ MsgResponse r
 
 -- | Send batch of responses. Use to respond to a batch of requests.
-sendBatchResponse :: MonadLoggerIO m => BatchResponse -> JsonRpcT m ()
+sendBatchResponse :: JsonRpcM m => BatchResponse -> m ()
 sendBatchResponse (BatchResponse rs) = do
     o <- reader outCh
     liftIO . atomically . writeTBMChan o $ MsgBatch $ map MsgResponse rs
@@ -307,7 +310,7 @@ sendBatchResponse (SingleResponse r) = do
 -- | Send any message. Do not use this. Use the other high-level functions
 -- instead. Will not track request ids. Incoming responses to requests sent
 -- using this method will be ignored.
-sendMessage :: MonadLoggerIO m => Message -> JsonRpcT m ()
+sendMessage :: JsonRpcM m => Message -> m ()
 sendMessage msg = reader outCh >>= liftIO . atomically . (`writeTBMChan` msg)
 
 -- | Create JSON-RPC session around conduits from transport layer.  When
