@@ -6,6 +6,7 @@
 module Network.JsonRpc.Interface
 ( -- * Establish JSON-RPC context
   JsonRpcT
+, JsonRpcM(..)
 , runJsonRpcT
 
   -- * Conduits for encoding/decoding
@@ -75,7 +76,11 @@ data Session = Session { inCh     :: TBMChan (Either Response Value)
 -- as context is maintaned.
 type JsonRpcT = ReaderT Session
 
-type JsonRpcM m = (MonadReader Session m, Functor m, MonadLoggerIO m)
+type JsonRpcCtx m = (JsonRpcM m, Functor m, MonadLoggerIO m)
+
+class Monad m => JsonRpcM m where
+   getSession :: m Session
+   gets       :: (Session -> a) -> m a
 
 initSession :: Ver -> Bool -> STM Session
 initSession v ignore =
@@ -116,8 +121,8 @@ decodeConduit ver = evalStateT loop Nothing where
 
 -- | Process incoming messages. Do not use this directly unless you know
 -- what you are doing. This is an internal function.
-processIncoming :: JsonRpcM m => m ()
-processIncoming = ask >>= \qs -> join . liftIO . atomically $ do
+processIncoming :: JsonRpcCtx m => m ()
+processIncoming = getSession >>= \qs -> join . liftIO . atomically $ do
     vEM <- readTBMChan $ inCh qs
     case vEM of
         Nothing -> flush qs
@@ -215,20 +220,20 @@ processIncoming = ask >>= \qs -> join . liftIO . atomically $ do
 -- | Returns Nothing if did not receive response, could not parse it, or
 -- request is a notification. Just Left contains the error object returned
 -- by server if any. Just Right means response was received just right.
-sendRequest :: (JsonRpcM m , ToJSON q, ToRequest q, FromResponse r)
+sendRequest :: (JsonRpcCtx m , ToJSON q, ToRequest q, FromResponse r)
             => q -> m (Maybe (Either ErrorObj r))
 sendRequest q = head `liftM` sendBatchRequest [q]
 
 -- | Send multiple requests in a batch. If only a single request, do not
 -- put it in a batch.
-sendBatchRequest :: (JsonRpcM m, ToJSON q, ToRequest q, FromResponse r)
+sendBatchRequest :: (JsonRpcCtx m, ToJSON q, ToRequest q, FromResponse r)
                  => [q] -> m [Maybe (Either ErrorObj r)]
 sendBatchRequest qs = do
-    v <- reader rpcVer
-    l <- reader lastId
-    s <- reader sentReqs
-    o <- reader outCh
-    k <- reader dead
+    v <- gets rpcVer
+    l <- gets lastId
+    s <- gets sentReqs
+    o <- gets outCh
+    k <- gets dead
     aps <- liftIO . atomically $ do
         d <- readTVar k
         aps <- forM qs $ \q ->
@@ -267,23 +272,23 @@ sendBatchRequest qs = do
 -- | Receive requests from remote endpoint. Returns Nothing if incoming
 -- channel is closed or has never been opened. Will reject incoming request
 -- if sent in a batch.
-receiveRequest :: JsonRpcM m => m (Maybe Request)
+receiveRequest :: JsonRpcCtx m => m (Maybe Request)
 receiveRequest = do
     bt <- receiveBatchRequest
     case bt of
         Nothing -> return Nothing
         Just (SingleRequest q) -> return $ Just q
         Just BatchRequest{} -> do
-            v <- reader rpcVer
+            v <- gets rpcVer
             let e = errorInvalid $ String "not accepting batches"
                 m = OrphanError v e
             sendResponse m
             return Nothing
 
 -- | Receive batch of requests. Will also accept single requests.
-receiveBatchRequest :: JsonRpcM m => m (Maybe BatchRequest)
+receiveBatchRequest :: JsonRpcCtx m => m (Maybe BatchRequest)
 receiveBatchRequest = do
-    chM <- reader reqCh
+    chM <- gets reqCh
     case chM of
         Just ch -> do
             $(logDebug) "listening for a new request"
@@ -293,25 +298,25 @@ receiveBatchRequest = do
             return Nothing
 
 -- | Send response message. Do not use to respond to a batch of requests.
-sendResponse :: JsonRpcM m => Response -> m ()
+sendResponse :: JsonRpcCtx m => Response -> m ()
 sendResponse r = do
-    o <- reader outCh
+    o <- gets outCh
     liftIO . atomically . writeTBMChan o $ MsgResponse r
 
 -- | Send batch of responses. Use to respond to a batch of requests.
-sendBatchResponse :: JsonRpcM m => BatchResponse -> m ()
+sendBatchResponse :: JsonRpcCtx m => BatchResponse -> m ()
 sendBatchResponse (BatchResponse rs) = do
-    o <- reader outCh
+    o <- gets outCh
     liftIO . atomically . writeTBMChan o $ MsgBatch $ map MsgResponse rs
 sendBatchResponse (SingleResponse r) = do
-    o <- reader outCh
+    o <- gets outCh
     liftIO . atomically . writeTBMChan o $ MsgResponse r
 
 -- | Send any message. Do not use this. Use the other high-level functions
 -- instead. Will not track request ids. Incoming responses to requests sent
 -- using this method will be ignored.
-sendMessage :: JsonRpcM m => Message -> m ()
-sendMessage msg = reader outCh >>= liftIO . atomically . (`writeTBMChan` msg)
+sendMessage :: JsonRpcCtx m => Message -> m ()
+sendMessage msg = gets outCh >>= liftIO . atomically . (`writeTBMChan` msg)
 
 -- | Create JSON-RPC session around conduits from transport layer.  When
 -- context exits session disappears.
