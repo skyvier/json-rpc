@@ -7,7 +7,6 @@ module Network.JsonRpc.Interface
 ( -- * Establish JSON-RPC context
   JsonRpcT
 , JsonRpcM(..)
-, runJsonRpcT
 
   -- * Conduits for encoding/decoding
 , decodeConduit
@@ -23,9 +22,8 @@ module Network.JsonRpc.Interface
 
   -- * Transports
   -- ** Client
-, jsonRpcTcpClient
   -- ** Server
-, jsonRpcTcpServer
+--, jsonRpcTcpServer
 
   -- * Internal data and functions
 , SentRequests
@@ -80,7 +78,9 @@ type JsonRpcCtx m = (JsonRpcM m, Functor m, MonadLoggerIO m)
 
 class Monad m => JsonRpcM m where
    getSession :: m Session
-   gets       :: (Session -> a) -> m a
+
+getSessionParam :: JsonRpcM m => (Session -> a) -> m a
+getSessionParam f = f <$> getSession
 
 initSession :: Ver -> Bool -> STM Session
 initSession v ignore =
@@ -229,11 +229,11 @@ sendRequest q = head `liftM` sendBatchRequest [q]
 sendBatchRequest :: (JsonRpcCtx m, ToJSON q, ToRequest q, FromResponse r)
                  => [q] -> m [Maybe (Either ErrorObj r)]
 sendBatchRequest qs = do
-    v <- gets rpcVer
-    l <- gets lastId
-    s <- gets sentReqs
-    o <- gets outCh
-    k <- gets dead
+    v <- getSessionParam rpcVer
+    l <- getSessionParam lastId
+    s <- getSessionParam sentReqs
+    o <- getSessionParam outCh
+    k <- getSessionParam dead
     aps <- liftIO . atomically $ do
         d <- readTVar k
         aps <- forM qs $ \q ->
@@ -279,7 +279,7 @@ receiveRequest = do
         Nothing -> return Nothing
         Just (SingleRequest q) -> return $ Just q
         Just BatchRequest{} -> do
-            v <- gets rpcVer
+            v <- getSessionParam rpcVer
             let e = errorInvalid $ String "not accepting batches"
                 m = OrphanError v e
             sendResponse m
@@ -288,7 +288,7 @@ receiveRequest = do
 -- | Receive batch of requests. Will also accept single requests.
 receiveBatchRequest :: JsonRpcCtx m => m (Maybe BatchRequest)
 receiveBatchRequest = do
-    chM <- gets reqCh
+    chM <- getSessionParam reqCh
     case chM of
         Just ch -> do
             $(logDebug) "listening for a new request"
@@ -300,24 +300,25 @@ receiveBatchRequest = do
 -- | Send response message. Do not use to respond to a batch of requests.
 sendResponse :: JsonRpcCtx m => Response -> m ()
 sendResponse r = do
-    o <- gets outCh
+    o <- getSessionParam outCh
     liftIO . atomically . writeTBMChan o $ MsgResponse r
 
 -- | Send batch of responses. Use to respond to a batch of requests.
 sendBatchResponse :: JsonRpcCtx m => BatchResponse -> m ()
 sendBatchResponse (BatchResponse rs) = do
-    o <- gets outCh
+    o <- getSessionParam outCh
     liftIO . atomically . writeTBMChan o $ MsgBatch $ map MsgResponse rs
 sendBatchResponse (SingleResponse r) = do
-    o <- gets outCh
+    o <- getSessionParam outCh
     liftIO . atomically . writeTBMChan o $ MsgResponse r
 
 -- | Send any message. Do not use this. Use the other high-level functions
 -- instead. Will not track request ids. Incoming responses to requests sent
 -- using this method will be ignored.
 sendMessage :: JsonRpcCtx m => Message -> m ()
-sendMessage msg = gets outCh >>= liftIO . atomically . (`writeTBMChan` msg)
+sendMessage msg = getSessionParam outCh >>= liftIO . atomically . (`writeTBMChan` msg)
 
+{-
 -- | Create JSON-RPC session around conduits from transport layer.  When
 -- context exits session disappears.
 runJsonRpcT :: (MonadLoggerIO m, MonadBaseControl IO m)
@@ -339,6 +340,7 @@ runJsonRpcT ver ignore snk src f = do
                     atomically . closeTBMChan $ outCh qs
                     _ <- wait o
                     return a
+-}
 
 
 cr :: Monad m => Conduit ByteString m ByteString
@@ -348,6 +350,7 @@ cr = CL.map (`B8.snoc` '\n')
 -- Transports
 --
 
+{-
 -- | TCP client transport for JSON-RPC.
 jsonRpcTcpClient
     :: (MonadLoggerIO m, MonadBaseControl IO m)
@@ -358,7 +361,9 @@ jsonRpcTcpClient
     -> m a            -- ^ Output of action
 jsonRpcTcpClient ver ignore cs f = runGeneralTCPClient cs $ \ad ->
     runJsonRpcT ver ignore (cr =$ appSink ad) (appSource ad) f
+-}
 
+{-
 -- | TCP server transport for JSON-RPC.
 jsonRpcTcpServer
     :: (MonadLoggerIO m, MonadBaseControl IO m)
@@ -369,3 +374,4 @@ jsonRpcTcpServer
     -> m a
 jsonRpcTcpServer ver ignore ss f = runGeneralTCPServer ss $ \cl ->
     runJsonRpcT ver ignore (cr =$ appSink cl) (appSource cl) f
+   -}
